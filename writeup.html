@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html>
+  <body>
+        <h3>Analysis of RE01</h3>
+        <h4>Introduction</h4>
+        <p>The following writeup contains the analysis of the Windows PE file
+           re_01.exe. The binary was pulled from the crackmes.one website under
+           "RE01."</p>
+        <p>The program utilizes some interesting anti reverse engineering and
+           anti analysis techniques. Breaking them down is bit tedious and
+           lengthy. I decided to break up the analysis into multiple parts that
+           will be documented over multiple posts. The following post will be
+           the first in the series. Let's JMP in and get reversing.</p>
+        <h4>main Function</h4>
+        <p>We start our exploration in the <code>main</code> function as there
+           is nothing too crazy happening in setting up the C runtime in
+           preparation for executing the code in <code>main</code>. Inside the
+           function the user is given the message
+           "...[INFO] Good luck and have fun ;) ...".</p>
+        <p>In the code listing below, the function at address 0x1010 in the
+           <code>CALL</code> instructions at 0x1086, 0x1092, and 0x1097 is the
+           <code>printf</code> function. The addresses at instructions 0x107f,
+           0x108b, and 0x1097 loaded into the <code>RCX</code> register are
+           the string arguments passed to the <code>printf</code> function to
+           be output to the user.</p>
+        <pre>
+          <code>
+107f:	48 8d 0d da	lea    rcx,[rip+0x11da]	# 0x2260
+1083:	11 00 00
+1086:	e8 85 ff ff    	call   0x1010
+108a:	ff
+108b:	48 8d 0d 1e 	lea    rcx,[rip+0x121e]	# 0x22b0
+108f:	12 00 00
+1092:	e8 79 ff ff    	call   0x1010
+1096:	ff
+1097:	48 8d 0d c2 	lea    rcx,[rip+0x11c2]	# 0x2260
+109b:	11 00 00
+109e:	e8 6d ff ff     call   0x1010
+10a2:	ff
+          </code>
+        </pre>
+        <p>Now the real fun begins! The code begins by loading the address of
+           the wide character string "Hackforces_2022" into the <code>R8</code>
+           register. Note, unlike an ASCII byte character string that is a
+           string of one byte characters, the wide character string used here
+           is a string composed of 16 bit or 2 byte characters. The
+           <code>EDX</code> register has the value 107 copied to it. The
+           <code>ECX</code> register is set to zero via the <code>XOR</code>
+           instruction. The three values are the three parameters to the
+           function at 0x2018 being called at 0x10b1.</p>
+        <pre>
+          <code>
+10a3:	4c 8d 05 56 	lea    r8,[rip+0x1256]	# 0x2300
+10a7:	12 00 00
+10aa:	ba 6b 00 00     mov    edx,0x6b
+10ae:	00
+10af:	33 c9           xor    ecx,ecx
+10b1:	ff 15 61 0f    	call   QWORD PTR [rip+0xf61]	# 0x2018
+10b5:	00 00
+          </code>
+        </pre>
+        <p>The function at 0x2018 is the <code>FindResourceW</code> function
+           from the KERNEL32.DLL. The function signature is seen below. The
+           MSDN documenation does note that the second parameter, lpName, can
+           be an integer identifier as it is used here.</p>
+        <pre>
+          <code>
+HRSRC FindResourceW(
+    [in, optional] HMODULE hModule,
+    [in]           LPCWSTR lpName,
+    [in]           LPCWSTR lpType
+);
+          </code>
+        </pre>
+        <p>The code looks for the resource (in the .rsrc section) with the
+           id 107 with a type "Hackforces_2022". We will come back to what is
+           to be found in this resource in a bit.</p>
+        <p>If the resource is found, a handle is returned to the resource's
+           information block.</p>
+        <p>The handle is copied to both the <code>RDX</code> and
+           <code>RBX</code> registers. The <code>RDX</code> register is the
+           second parameter with NULL being the first to the function at
+           0x2000 being called at 0x10bf.</p>
+        <pre>
+          <code>
+10b7:	48 8b d0        mov    rdx,rax
+10ba:	33 c9           xor    ecx,ecx
+10bc:	48 8b d8        mov    rbx,rax
+10bf:	ff 15 3b 0f    	call   QWORD PTR [rip+0xf3b]	# 0x2000
+10c3:	00 00
+          </code>
+        </pre>
+        <p>The function at 0x2000 is the <code>SizeOfResource</code> function.
+           The function uses the handle to the resource's information block
+           to return the number of bytes contained in the resource.</p>
+        <pre>
+          <code>
+DWORD SizeOfResource(
+    [in, optional] HMODULE hModule,
+    [in]           HRSRC   hResInfo
+);
+          </code>
+        </pre>
+        <p>The number of bytes is copied to the <code>EDI</code> register. The
+           value in the <code>RBX</code> register, a handle to the resource's
+           information block, is copied to the <code>RDX</code> register. This
+           is the second parameter with NULL being the first to the function
+           at 0x2010 being called at 0x10cc.</p>
+        <pre>
+          <code>
+10c5:	48 8b d3        mov    rdx,rbx
+10c8:	33 c9           xor    ecx,ecx
+10ca:	8b f8           mov    edi,eax
+10cc:	ff 15 3e 0f    	call   QWORD PTR [rip+0xf3e]	# 0x2010
+10d0:	00 00
+          </code>
+        </pre>
+        <p>The function at 0x2010 is the <code>LoadResource</code> function.
+           On success, the function will return a handle to the data of the
+           resource from the handle used as the second parameter.</p>
+        <p>Note in all three of the functions described above dealing with a
+           resource the first parameter was NULL. The first parameter in all
+           three is a handle to a module containing the resource. Using NULL
+           defaults the module to the one that created the current process.</p>
+        <pre>
+          <code>
+HGLOBAL LoadResource(
+    [in, optional] HMODULE hModule,
+    [in]           HRSRC   hResInfo
+);
+          </code>
+        </pre>
+        <p>The handle to the resource's data is copied to the <code>RSI</code>
+           register. A function at 0x2008 being called at 0x10e5 takes four
+           parameters. The first is NULL in the <code>ECX</code> register. The
+           second parameter is the size in bytes of the resource in the
+           <code>EDX</code> register. The <code>R8D</code> and <code>R9D</code>
+           registers contain the third and fourth parameters respectively.</p>
+        <pre>
+          <code>
+10d2:	41 b9 40 00    	mov    r9d,0x40
+10d6:	00 00
+10d8:	41 b8 00 10    	mov    r8d,0x1000
+10dc:	00 00
+10de:	8b d7           mov    edx,edi
+10e0:	33 c9           xor    ecx,ecx
+10e2:	48 8b f0        mov    rsi,rax
+10e5:	ff 15 1d 0f    	call   QWORD PTR [rip+0xf1d]	# 0x2008
+10e9:	00 00
+          </code>
+        </pre>
+        <p>The function at 0x2008 is the <code>VirtualAlloc</code> function.
+           As described above it takes four parameters and, for our purposes,
+           allocates memory for our process. The second parameter is the number
+           of bytes of memory, or the size of the region to be allocated,
+           requested. The third parameter is the value to determine the type of
+           memory allocation. The value 4096 (0x1000) is
+           the <code>MEM_COMMIT</code> type. The fourth parameter sets the
+           memory protection for the allocated memory. In our case, the
+           protection is set to <code>PAGE_EXECUTE_READWRITE</code>.</p>
+        <pre>
+          <code>
+LPVOID VirtualAlloc(
+    [in, optional] LPVOID lpAddress,
+    [in]           SIZE_T dwSize,
+    [in]           DWORD  flAllocationType,
+    [in]           DWORD  flProtect
+);
+          </code>
+        </pre>
+        <p>The summarized version of the <code>VirtualAlloc</code> call above
+           is we allow the system to determine where to allocate the region of
+           memory. We request the number of bytes in our resource that we
+           looked up with the <code>SizeOfResource</code> function. We request
+           the memory to be read, write, and executable and when initially
+           accessed the contents be zero.</p>
+        <p>The base address of the allocated region of memory is copied to the
+           <code>RBX</code> register. The function at 0x1d82 is the
+           <code>memcpy</code> function. The <code>memcpy</code> function is
+           used here to copy the number of bytes returned from
+           <code>SizeOfResource</code> from the resource loaded with
+           <code>LoadResource</code> to the region of memory allocated
+           with <code>VirtualAlloc</code>. We are copying the entire resource
+           to the newly allocated region of memory.</p>
+        <pre>
+          <code>
+10eb:	44 8b c7         mov    r8d,edi
+10ee:	48 8b d6         mov    rdx,rsi
+10f1:	48 8b c8         mov    rcx,rax
+10f4:	48 8b d8         mov    rbx,rax
+10f7:	e8 86 0c 00      call   0x1d82
+10fb:	00
+          </code>
+        </pre>
+        <p>With the resource now loaded and executable, the <code>main</code>
+           function calls the base address of the newly allocated region of
+           memory.</p>
+        <pre>
+          <code>
+10fc:	ff d3          	call   rbx
+          </code>
+        </pre>
+        <h4>Hackforces_2022</h4>
+        <p>The first two instructions use the good ole' <code>CALL</code>
+           followed by an immediate <code>POP</code> to acquire the runtime
+           virtual address of the <code>POP</code> instruction. The address
+           is stored in the <code>RCX</code> register and copied to the
+           <code>R8</code> register. Values are added to both registers. The
+           <code>EDX</code> register has a value copied to it at instruction
+           0x50d0. The <code>R9D</code> register has a 4 copied to it. The 
+           value in the <code>RSI</code> register which is still the handle
+           for the resource loaded in <code>main</code> (the current resource
+           we are in) is pushed on the stack. The four registers and the value
+           pushed on the stack are the 5 input parameters to the function at
+           0x5100 being called at 0x50f6.</p>
+        <pre>
+          <code>
+50c0:	e8 00 00 00     call   0x50c5
+50c4:	00
+50c5:	59              pop    rcx
+50c6:	49 89 c8        mov    r8,rcx
+50c9:	48 81 c1 23	add    rcx,0xb23
+50cd:	0b 00 00
+50d0:	ba 45 77 62     mov    edx,0x30627745
+50d4:	30
+50d5:	49 81 c0 23 	add    r8,0x5323
+50d9:	53 00 00
+50dc:	41 b9 04 00    	mov    r9d,0x4
+50e0:	00 00
+50e2:	56              push   rsi
+50e3:	48 89 e6        mov    rsi,rsp
+50e6:	48 83 e4 f0     and    rsp,0xfffffffffffffff0
+50ea:	48 83 ec 30     sub    rsp,0x30
+50ee:	c7 44 24 20 	mov    DWORD PTR [rsp+0x20],0x0
+50f2:	00 00 00 00
+50f6:	e8 05 00 00     call   0x5100
+50fa:	00
+          </code>
+        </pre>
+        <p>Before jumping into the function at 0x5100 from above, lets
+           investigate the addresses calculated in the <code>RCX</code> and
+           <code>R8</code> registers. Note, the runtime address will be
+           different for every instance of the program run (or should). I am
+           using the addresses of where the bytes are located in the static
+           binary as it is in the disassembly listing and not the actual
+           runtime addresses.</p>
+        <p>After the <code>POP</code> instruction at 0x50c5, the
+           <code>RCX</code> register will contain the address 0x50c5. Adding
+           the value 0xb23 to that will result in the address 0x5be8. Having
+           a little gander at what is at this address makes the binary even
+           more interesting.</p>
+        <pre>
+          <code>
+5be8: 4d	M
+5be9: 5a	Z
+5bea: 90
+5beb: 00
+5bec: 03
+5bed: 00
+5bee: 00
+5bef: 00
+          </code>
+        </pre>
+        <p>It appears we have another executable (.dll or .exe) embedded in our
+           binary! This is starting to get pretty cool!</p>
+        <p>Investigating the address in the <code>R8</code> register, which is
+           the sum of 0x50c5 and 0x5323 or 0xa3e8, we see a 4 byte integer
+           0x65766164. All the bytes of the integer are ASCII lower case
+           letters. If viewed as a character string, the string is "dave".</p>
+        <h4>Checking DLL Functions</h4>
+        <p>Back to the function at 0x5100 from above, there are a few local
+           variables populated with what initially appears to be numeric values.
+           They are actually C (1 byte per character) strings. I will get back
+           to describing these in more detail a little later.</p>
+        <p>The exception to the C strings population is a wide character
+           (2 byte per character) string and a value.</p>
+        <pre>
+          <code>
+512c:	c7 45 d8 6b	mov    DWORD PTR [rbp-0x28],0x65006b
+5130:	00 65 00
+...
+516c:	c7 45 dc 72 	mov    DWORD PTR [rbp-0x24],0x6e0072
+5170:	00 6e 00
+5173:	c7 45 e0 65 	mov    DWORD PTR [rbp-0x20],0x6c0065
+5177:	00 6c 00
+517a:	c7 45 e4 33 	mov    DWORD PTR [rbp-0x1c],0x320033
+517e:	00 32 00
+5181:	c7 45 e8 2e 	mov    DWORD PTR [rbp-0x18],0x64002e
+5185:	00 64 00
+5188:	c7 45 ec 6c 	mov    DWORD PTR [rbp-0x14],0x6c006c
+518a:	00 6c 00
+          </code>
+        </pre>
+        <p>Taking the bytes from above to their character equivalents we see
+           the string below</p>
+        <pre>
+          <code> 
+'k', 0, 'e', 0, 'r', 0, 'n', 0, 'e', 0, 'l',
+0, '3', 0, '2', 0, '.', 0, 'd', 0, 'l', 0, 'l'
+
+or
+
+u"kernel32.dll"
+          </code> 
+        </pre>
+        <p>We will hold on to this wide character string and see its use once
+           we return from the function we will describe next. Before we jump
+           into that function lets look at the value placed in the
+           <code>ECX</code> register before calling the function. It is either
+           a negative number or it is an unsigned number. Its individual bytes
+           are out of the ASCII character range. I have nothing. There is not
+           much to go off of to determine its significance or purpose as of
+           now.</p>
+        <pre>
+          <code>
+513a:	b9 13 9c bf    	mov    ecx,0xbdbf9c13
+513e:	bd
+...
+5258:	e8 7f 08 00     call   0x5adc
+525c:	00
+          </code>
+        </pre>
+        <p>Inside the function at 0x5adc, a very significant <code>MOV</code>
+           instruction occurs. We are copying a value from a reference to a
+           segment register. In particular, the segment register
+           <code>GS</code> references the Thread Environment Block or TEB. The
+           TEB will store the context information for the thread. The
+           instruction also has an offset into the TEB. A little research into
+           the TEB data structure shows that offset address into the TEB
+           contains a pointer to the Process Environment Block.</p>
+        <pre>
+          <code>
+5af5:	65 48 8b 04 	mov    rax,QWORD PTR gs:0x60
+5af9:	25 60 00
+          </code>
+        </pre>
+        <p>The Proces Environment Block or PEB is what the TEB was for the
+           thread but for the process. The instruction at 0x5b03 copies the
+           pointer at a 24 byte offset into the PEB to the <code>RDX</code>
+           register. This pointer is a pointer to the <code>PEB_LDR_DATA</code>
+           data structure.</p>
+        <p>The <code>PEB_LDR_DATA</code> data structure holds the information
+           to the user-mode modules that are loaded in the process. The
+           instruction at 0x5b07 then copies a pointer at a 16 byte offset in
+           the <code>PEB_LDR_DATA</code> to the <code>R9</code> register.</p>
+        <p>The pointer copied to the <code>R9</code> register is of the type
+           <code>LIST_ENTRY</code>. The <code>LIST_ENTRY</code> type is a
+           doubly linked list. This particular <code>LIST_ENTRY</code> is the
+           <code>InLoadOrderModuleList</code>. Each item or link in the doubly
+           linked list is of the type <code>LDR_DATA_TABLE_ENTRY</code>.</p>
+        <pre>
+          <code>
+5b03:	48 8b 50 18    	mov    rdx,QWORD PTR [rax+0x18]
+5b07:	4c 8b 4a 10    	mov    r9,QWORD PTR [rdx+0x10]
+          </code>
+        </pre>
+        <p>The pointer at 48 bytes into the <code>LDR_DATA_TABLE_ENTRY</code>
+           data structure is copied to the <code>R8</code> register. This
+           value is the DllBase or the base address for the Module (DLL).</p>
+        <pre>
+          <code>
+5b0b:	4d 8b 41 30     mov    r8,QWORD PTR [r9+0x30]
+          </code>
+        </pre>
+        <p>The next data member used from the
+           <code>LDR_DATA_TABLE_ENTRY</code> data structure is the
+           <code>UNICODE_STRING</code> at 88 bytes into the data structure.
+           This string is the BaseDllName. The pointer to its value is copied
+           to the <code>XMM0</code> register.</p>
+        <p>60 bytes into base address for the DLL (<code>R8</code> register)
+           is a 4 byte integer that holds the file address of the exe header or
+           the <code>IMAGE_NT_HEADERS64</code> data structure. That value is
+           copied to the <code>RAX</code> register, sign extended.</p>
+        <p>The <code>LIST_ENTRY</code> for the InLoadOrderLinks is
+           copied to the <code>R9</code> register at the instruction at
+           0x5b24. The value is taken from offset 0 in the
+           <code>LDR_DATA_TABLE_ENTRY</code>. This is effectively traversing
+           the Linked List by updating the <code>R9</code> register with
+           next element in the Linked List.</p>
+        <p>The <code>UNICODE_STRING</code> for the BaseDllName is copied to the
+           RSP register. Finally the <code>IMAGE_NT_HEADERS64</code> data
+           structure has its first <code>IMAGE_DATA_DIRECTORY</code> data
+           structure's first four bytes copied to the <code>R11</code>
+           register. The first <code>IMAGE_DATA_DIRECTORY</code> is found at
+           offset 96 bytes into the <code>IMAGE_NT_HEADERS64</code> data
+           structure. The first 4 bytes are the export table address for the
+           DLL being investigated.</p>
+        <p>The instructions described will continue in a loop until the value
+           in the <code>R11</code> regsiter is not zero. Basically the code
+           will loop until it finds a DLL with an export table.</p>
+        <pre>
+          <code>
+5b18:	41 0f 10 41     movups xmm0,XMMWORD PTR [r9+0x58]
+5b1c:	58
+5b1d:	49 63 40 3c    	movsxd rax,DWORD PTR [r8+0x3c]
+5b21:	41 8b d6       	mov    edx,r14d
+5b24:	4d 8b 09       	mov    r9,QWORD PTR [r9]
+5b27:	f3 0f 7f 04     movdqu XMMWORD PTR [rsp],xmm0
+5b2b:	24
+5b2c:	46 8b 9c 00 	mov    r11d,DWORD PTR [rax+r8*1+0x88]
+5b30:	88 00 00
+          </code>
+        </pre>
+        <p>Once a DLL has been found from the InLoadOrderModuleList that
+           contains an export table, its BaseDllName is passed through what
+           appears to be the first half of some kind of checksum function. The
+           <code>UNICODE_STRING</code> data structure is defined as seen
+           below.</p>
+        <pre>
+          <code>
+typedef struct _UNICODE_STRING {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR  Buffer;
+} UNICODE_STRING, *PUNICODE_STRING;
+          </code>
+        </pre>
+        <p>The instruction at 0x5b3d will result in the MaximumLength data
+           member from the <code>UNICODE_STRING</code> to be in the
+           <code>RAX</code> register. The Buffer data member is copied to the
+           <code>RCX</code> register.</p>
+        <p>The <code>EDX</code> register is used to sum the result from each
+           iteration of the decoding or checksum algorithm below. The loop
+           performs MaximumLength number of iterations. The result in the
+           <code>EDX</code> register is used in the first half of the sum to 
+           be compared to the 4 byte parameter passed into the function.</p>
+        <pre>
+          <code>
+5b39:	48 8b 04 24     mov    rax,QWORD PTR [rsp]
+5b3d:	48 c1 e8 10     shr    rax,0x10
+5b41:	66 44 3b f0     cmp    r14w,ax
+5b45:	73 22           jae    0x5b69
+5b47:	48 8b 4c 24     mov    rcx,QWORD PTR [rsp+0x8]
+5b4b:	08
+5b4c:	44 0f b7 d0     movzx  r10d,ax
+5b50:	0f be 01        movsx  eax,BYTE PTR [rcx]
+5b53:	c1 ca 0d        ror    edx,0xd
+5b56:	80 39 61        cmp    BYTE PTR [rcx],0x61
+5b59:	7c 03           jl     0x5b5e
+5b5b:	83 c2 e0        add    edx,0xffffffe0
+5b5e:	03 d0           add    edx,eax
+5b60:	48 ff c1        inc    rcx
+5b63:	49 83 ea 01     sub    r10,0x1
+5b67:	75 e7           jne    0x5b50
+          </code>
+        </pre>
+        <p>The export table is directly accessed from the DLL by adding its
+           address in the DLL file to the base address of the DLL. A double
+           word pointer (4 bytes) at a 32 byte offset from the address
+           calculated in the DLL is copied to the <code>EDI</code> register.
+           The value is the address of the export name pointer table. The value
+           is then found in the DLL file by adding the DLL's base address to
+           it. A comparison is made to the number of entries in the name
+           pointer table identified. If the number is found to be zero, the
+           process of identifying a DLL with an export table is performed again
+           (code starting at 0x5b0b).</p>
+        <pre>
+          <code>
+5b69:	4f 8d 14 18    	lea    r10,[r8+r11*1]
+5b6d:	45 8b de       	mov    r11d,r14d
+5b70:	41 8b 7a 20    	mov    edi,DWORD PTR [r10+0x20]
+5b74:	49 03 f8       	add    rdi,r8
+5b77:	45 39 72 18    	cmp    DWORD PTR [r10+0x18],r14d
+5b7b:	76 8e          	jbe    0x5b0b
+          </code>
+        </pre>
+        <p>A similar operation is performed on each entry in the export name
+           pointer table as was performed for the DLL name. Each iteration will
+           sum the result calculated in the decode or checksum algorithm in the
+           body of the loop. At the conclusion of the loop (the loop iterates
+           until a NULL is encountered in the export name string), the
+           calculated sum is added to the DLL name calculated value and
+           compared to the first parameter value passed to the function. If
+           the value is found to be equal, the program has identified the DLL
+           and function it was trying to find. If the value is not equal, the
+           loop to calculate the second half of the value check is performed
+           on each entry in the export name pointer table until a name is
+           found that matches the function's parameter value. If the table
+           iterates through every entry and a match is not found, the process
+           of identifying a DLL with an export table is performed again
+           (0x5b0b).</p>
+        <pre>
+          <code>
+5b7d:	8b 37          	mov    esi,DWORD PTR [rdi]
+5b7f:	41 8b de       	mov    ebx,r14d
+5b82:	49 03 f0       	add    rsi,r8
+5b85:	48 8d 7f 04    	lea    rdi,[rdi+0x4]
+5b89:	0f be 0e       	movsx  ecx,BYTE PTR [rsi]
+5b8c:	48 ff c6       	inc    rsi
+5b8f:	c1 cb 0d       	ror    ebx,0xd
+5b92:	03 d9          	add    ebx,ecx
+5b94:	84 c9          	test   cl,cl
+5b96:	75 f1          	jne    0x5b89
+5b98:	8d 04 13        lea    eax,[rbx+rdx*1]
+5b9b:	3b c5           cmp    eax,ebp
+5b9d:	74 0e           je     0x5bad
+5b9f:	41 ff c3        inc    r11d
+5ba2:	45 3b 5a 18     cmp    r11d,DWORD PTR [r10+0x18]
+5ba6:	72 d5           jb     0x5b7d
+          </code>
+        </pre>
+        <p>With the DLL and the function of interest identified, the address of
+           the Ordinal Table of the export table for the DLL is copied to the
+           <code>EAX</code> register. The index of the name identified in the
+           previous loop is adjusted for indexing into an array of 16 bit
+           elements. The DLL base address is added to the Ordinal Table address
+           and the 16 bit adjusted index is used to obtain the true index for
+           the identified function in the DLL. The export address table address
+           is added to the DLL base address and the index found is used to
+           finally obtain the address of the function identified in the DLL.
+           This function address is returned from the function.</p>
+        <pre>
+          <code>
+5bad:	41 8b 42 24    	mov    eax,DWORD PTR [r10+0x24]
+5bb1:	43 8d 0c 1b    	lea    ecx,[r11+r11*1]
+5bb5:	49 03 c0       	add    rax,r8
+5bb8:	0f b7 14 01    	movzx  edx,WORD PTR [rcx+rax*1]
+5bbc:	41 8b 4a 1c     mov    ecx,DWORD PTR [r10+0x1c]
+5bc0:	49 03 c8        add    rcx,r8
+5bc3:	8b 04 91       	mov    eax,DWORD PTR [rcx+rdx*4]
+5bc6:	49 03 c0       	add    rax,r8
+5bc9:	eb 02          	jmp    0x5bcd
+          </code>
+        </pre>
+        <p>In summary, the function uses a value passed as a parameter to scan
+           the imported DLLs for DLLs with an export table. The filterd DLLs
+           are then checked by their name and all the functions they export
+           until the sum of the checksum or decode algorithm used for both the
+           DLL name and a particular function name in the DLL is equal to the
+           value passed into the function. The address of the identified
+           function is then returned from the function.</p>
+        <p>For the value passed in of 0xbdf9c13, the resulting DLL will be
+           ntdll.dll with the exported function of <code>LdrLoadDll</code>.</p>
+  </body>
+</html>
